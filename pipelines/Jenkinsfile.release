@@ -1,0 +1,269 @@
+/**
+ * 发布流水线（Jenkinsfile.release）
+ *
+ * 此流水线专用于正式版本发布（通过 Git Tag 触发）
+ * 流程：代码检出 → 构建 → 测试 → 构建发布镜像（语义化版本号）→ 部署到生产
+ */
+@Library('cicd-shared-library') _
+
+import org.cicd.PipelineUtils
+
+pipeline {
+    agent {
+        kubernetes {
+            label "release-${env.BUILD_NUMBER}"
+            yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins
+  containers:
+    - name: jnlp
+      image: jenkins/inbound-agent:latest-jdk17
+      resources:
+        requests:
+          cpu: "200m"
+          memory: "256Mi"
+    - name: maven
+      image: ${HARBOR_URL}/build-agents/java:17
+      command: ["sleep"]
+      args: ["infinity"]
+      resources:
+        requests:
+          cpu: "1000m"
+          memory: "2Gi"
+        limits:
+          cpu: "2000m"
+          memory: "4Gi"
+      volumeMounts:
+        - name: maven-cache
+          mountPath: /root/.m2
+    - name: docker
+      image: docker:24-dind
+      securityContext:
+        privileged: true
+      env:
+        - name: DOCKER_TLS_CERTDIR
+          value: ""
+    - name: helm
+      image: alpine/helm:3.14.0
+      command: ["sleep"]
+      args: ["infinity"]
+  volumes:
+    - name: maven-cache
+      persistentVolumeClaim:
+        claimName: maven-cache-pvc
+"""
+        }
+    }
+
+    options {
+        timeout(time: 90, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        timestamps()
+        ansiColor('xterm')
+    }
+
+    environment {
+        APP_NAME    = 'demo-app'
+        DOCKER_REG  = 'harbor.your-company.com'
+        DOCKER_REPO = 'team/demo-app'
+        HARBOR_URL  = 'harbor.your-company.com'
+        // TAG_NAME 由 Jenkins 从 Git Tag 自动设置
+        RELEASE_VERSION = "${env.TAG_NAME ?: 'v0.0.0'}"
+    }
+
+    stages {
+        stage('版本校验') {
+            steps {
+                script {
+                    if (!env.TAG_NAME?.matches(/^v\d+\.\d+\.\d+$/)) {
+                        error "发布流水线必须由符合 vX.Y.Z 格式的 Git Tag 触发，当前标签: ${env.TAG_NAME}"
+                    }
+                    def utils = new PipelineUtils(this)
+                    env.SEMVER = PipelineUtils.parseSemver(env.TAG_NAME)
+                    echo "🚀 准备发布版本: ${env.SEMVER}"
+                }
+            }
+        }
+
+        stage('代码检出') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('构建') {
+            steps {
+                container('maven') {
+                    sh 'mvn clean package -DskipTests -B'
+                }
+            }
+        }
+
+        stage('完整测试') {
+            parallel {
+                stage('单元测试') {
+                    steps {
+                        container('maven') {
+                            sh 'mvn test -B'
+                        }
+                    }
+                    post {
+                        always {
+                            junit '**/target/surefire-reports/*.xml'
+                            jacoco execPattern: '**/target/jacoco.exec'
+                        }
+                    }
+                }
+                stage('代码质量') {
+                    steps {
+                        withSonarQubeEnv('sonarqube') {
+                            container('maven') {
+                                sh "mvn sonar:sonar -Dsonar.projectKey=${APP_NAME} -Dsonar.projectVersion=${SEMVER}"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('质量门检查') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('构建发布镜像') {
+            steps {
+                container('docker') {
+                    script {
+                        docker.withRegistry("https://${DOCKER_REG}", 'harbor-credentials') {
+                            def image = docker.build("${DOCKER_REPO}:${SEMVER}")
+                            image.push()
+                            image.push('latest')
+                            // 同时打一个 major.minor 标签，如 1.2
+                            def majorMinor = SEMVER.split('\\.')[0..1].join('.')
+                            image.push(majorMinor)
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('镜像安全扫描') {
+            steps {
+                container('docker') {
+                    sh """
+                        docker run --rm \
+                          -v /var/run/docker.sock:/var/run/docker.sock \
+                          aquasec/trivy image \
+                          --exit-code 1 \
+                          --severity HIGH,CRITICAL \
+                          --no-progress \
+                          ${DOCKER_REG}/${DOCKER_REPO}:${SEMVER}
+                    """
+                }
+            }
+        }
+
+        stage('部署到预发布环境') {
+            steps {
+                helmDeploy(
+                    releaseName: APP_NAME,
+                    chart      : './helm',
+                    namespace  : 'staging',
+                    valuesFile : 'helm/values-staging.yaml',
+                    imageTag   : SEMVER,
+                    registry   : DOCKER_REG
+                )
+            }
+        }
+
+        stage('预发布 E2E 测试') {
+            steps {
+                sh 'bash testing/e2e/run-tests.sh'
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: 'e2e-test-results.xml'
+                }
+            }
+        }
+
+        stage('发布审批') {
+            steps {
+                timeout(time: 24, unit: 'HOURS') {
+                    input message: """
+🚀 准备将 ${APP_NAME} v${SEMVER} 发布到生产环境
+
+镜像: ${DOCKER_REG}/${DOCKER_REPO}:${SEMVER}
+标签: ${env.TAG_NAME}
+
+请确认所有测试已通过，是否批准生产发布？
+                    """, ok: '✅ 批准发布'
+                }
+            }
+        }
+
+        stage('部署到生产环境') {
+            steps {
+                helmDeploy(
+                    releaseName: APP_NAME,
+                    chart      : './helm',
+                    namespace  : 'prod',
+                    valuesFile : 'helm/values-prod.yaml',
+                    imageTag   : SEMVER,
+                    registry   : DOCKER_REG
+                )
+            }
+        }
+
+        stage('生产冒烟测试') {
+            steps {
+                sh """
+                    # 验证生产环境应用健康状态
+                    kubectl rollout status deployment/${APP_NAME} -n prod --timeout=5m
+                    # 发送简单健康检查请求
+                    sleep 10
+                    curl -f https://your-app.your-company.com/health || exit 1
+                    echo "✅ 生产环境健康检查通过"
+                """
+            }
+        }
+
+        stage('创建 GitHub/GitLab Release') {
+            steps {
+                withCredentials([string(credentialsId: 'gitlab-api-token', variable: 'GITLAB_TOKEN')]) {
+                    sh """
+                        curl --request POST \
+                          --header "PRIVATE-TOKEN: \$GITLAB_TOKEN" \
+                          --header "Content-Type: application/json" \
+                          --data '{
+                            "name": "Release ${RELEASE_VERSION}",
+                            "tag_name": "${RELEASE_VERSION}",
+                            "description": "## Release ${SEMVER}\\n\\nDocker Image: ${DOCKER_REG}/${DOCKER_REPO}:${SEMVER}"
+                          }' \
+                          "${GITLAB_URL}/api/v4/projects/${env.CI_PROJECT_ID}/releases" || true
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "🎉 版本 ${SEMVER} 已成功发布到生产环境！"
+            notifyBuild(channel: 'release-notifications')
+        }
+        failure {
+            echo "💥 版本 ${SEMVER} 发布失败！"
+            notifyBuild(channel: 'release-notifications')
+        }
+        cleanup {
+            cleanWs()
+        }
+    }
+}

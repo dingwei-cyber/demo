@@ -1,0 +1,209 @@
+# Jenkins Helm Chart 定制配置
+# 参考：https://github.com/jenkinsci/helm-charts/blob/main/charts/jenkins/VALUES_SUMMARY.md
+
+controller:
+  # Jenkins 镜像
+  image: "jenkins/jenkins"
+  tag: "2.440.3-lts-jdk17"
+  imagePullPolicy: "Always"
+
+  # 资源限制
+  resources:
+    requests:
+      cpu: "1000m"
+      memory: "2Gi"
+    limits:
+      cpu: "4000m"
+      memory: "8Gi"
+
+  # JVM 参数
+  javaOpts: >-
+    -Dfile.encoding=UTF-8
+    -Duser.timezone=Asia/Shanghai
+    -Dhudson.model.DirectoryBrowserSupport.CSP=
+    -Dorg.jenkinsci.plugins.durabletask.BourneShellScript.HEARTBEAT_CHECK_INTERVAL=300
+
+  # Jenkins URL（生产环境设置实际域名）
+  jenkinsUrl: "http://jenkins.jenkins.svc.cluster.local:8080"
+  jenkinsAdminEmail: "cicd@your-company.com"
+
+  # 禁用 Controller 执行任务
+  numExecutors: 0
+
+  # JCasC 配置
+  JCasC:
+    enabled: true
+    defaultConfig: false     # 禁用默认配置，使用自定义 jenkins.yaml
+    configScripts: {}
+    configMapAnnotations: {}
+
+  # 从 ConfigMap 加载 JCasC 配置
+  sidecars:
+    configAutoReload:
+      enabled: true     # 配置文件变更时自动热重载
+      sleepTime: 10
+
+  # 从 Secret 加载环境变量（供 JCasC 使用）
+  envFrom:
+    - secretRef:
+        name: jenkins-secrets
+
+  # 挂载 JCasC ConfigMap
+  extraVolumeMounts:
+    - name: jenkins-casc
+      mountPath: /var/jenkins_home/casc_configs
+
+  extraVolumes:
+    - name: jenkins-casc
+      configMap:
+        name: jenkins-casc
+
+  # 安装插件列表
+  installPlugins:
+    # Kubernetes 弹性 Agent
+    - kubernetes:latest
+    - kubernetes-credentials:latest
+    - kubernetes-client-api:latest
+
+    # 流水线核心
+    - workflow-aggregator:latest
+    - workflow-job:latest
+    - pipeline-stage-view:latest
+    - blue-ocean:latest
+    - blueocean-pipeline-editor:latest
+
+    # GitLab 集成
+    - gitlab-plugin:latest
+    - gitlab-branch-source:latest
+    - git:latest
+    - gitea:latest
+
+    # 配置即代码
+    - configuration-as-code:latest
+
+    # Job DSL
+    - job-dsl:latest
+
+    # 凭证管理
+    - credentials:latest
+    - credentials-binding:latest
+    - plain-credentials:latest
+    - ssh-credentials:latest
+
+    # 通知
+    - mailer:latest
+    - email-ext:latest
+    - dingtalk:latest
+
+    # 代码质量
+    - sonar:latest
+    - jacoco:latest
+    - cobertura:latest
+    - warnings-ng:latest
+    - htmlpublisher:latest
+
+    # 测试报告
+    - junit:latest
+    - allure-jenkins-plugin:latest
+
+    # 安全
+    - role-strategy:latest
+    - matrix-auth:latest
+    - authorize-project:latest
+
+    # Docker
+    - docker-workflow:latest
+    - docker-plugin:latest
+
+    # 实用工具
+    - timestamper:latest
+    - ansicolor:latest
+    - build-timeout:latest
+    - rebuild:latest
+    - throttle-concurrents:latest
+    - ws-cleanup:latest
+    - build-discarder:latest
+    - parameterized-trigger:latest
+
+  # Readiness & Liveness 探针
+  healthProbes: true
+  probes:
+    startupProbe:
+      httpGet:
+        path: '/login'
+        port: http
+      periodSeconds: 10
+      failureThreshold: 60
+    livenessProbe:
+      httpGet:
+        path: '/login'
+        port: http
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 12
+    readinessProbe:
+      httpGet:
+        path: '/login'
+        port: http
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+
+  # 服务配置
+  serviceType: ClusterIP
+  servicePort: 8080
+  agentListenerServiceType: ClusterIP
+  agentListenerPort: 50000
+
+  # Ingress 配置（生产环境使用）
+  ingress:
+    enabled: false   # 改为 true 并配置域名后使用
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    hosts:
+      - host: jenkins.your-company.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: jenkins-tls
+        hosts:
+          - jenkins.your-company.com
+
+# 持久化存储
+persistence:
+  enabled: true
+  storageClass: "standard"
+  accessMode: ReadWriteOnce
+  size: "100Gi"
+  annotations:
+    "helm.sh/resource-policy": keep  # 防止 helm uninstall 时删除 PVC
+
+# ServiceAccount（使用预先创建的）
+serviceAccount:
+  create: false
+  name: jenkins
+
+serviceAccountAgent:
+  create: false
+  name: jenkins
+
+# Kubernetes Agent 全局配置
+agent:
+  enabled: true
+  defaultsProviderTemplate: ""
+  namespace: jenkins
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+# 备份配置（生产环境建议启用）
+backup:
+  enabled: false
+  # schedule: "0 2 * * *"  # 每天凌晨2点备份
+  # destination: s3://your-bucket/jenkins-backup

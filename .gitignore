@@ -1,0 +1,72 @@
+# 本地敏感配置文件（不提交到代码仓库）
+scripts/env.local
+*.tfvars
+!*.tfvars.example
+
+# Terraform 状态和缓存
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.lock.info
+.terraform.lock.hcl
+infrastructure/terraform/environments/*.tfvars
+infrastructure/terraform/tfplan
+
+# 构建产物
+target/
+dist/
+build/
+*.jar
+*.war
+*.whl
+*.tar.gz
+
+# 依赖目录
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# 测试报告（CI 生成）
+test-results.xml
+integration-test-results.xml
+e2e-test-results.xml
+e2e-results/
+coverage/
+htmlcov/
+.coverage
+coverage.xml
+*.exec
+
+# IDE 配置
+.idea/
+.vscode/
+*.iml
+*.iws
+
+# OS 文件
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.tmp
+*.bak
+*.swp
+*~
+
+# Docker 相关
+.dockerignore
+
+# Helm 依赖
+charts/
+
+# 密钥文件（严禁提交！）
+*.pem
+*.key
+*.p12
+*.jks
+id_rsa
+id_rsa.pub
+kubeconfig

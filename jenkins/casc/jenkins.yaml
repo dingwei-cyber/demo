@@ -1,0 +1,358 @@
+# Jenkins Configuration as Code (JCasC)
+# 所有 Jenkins 配置均在此文件中管理，实现"配置即代码"
+# 文档: https://www.jenkins.io/projects/jcasc/
+
+jenkins:
+  systemMessage: |
+    欢迎使用 CICD 自动化系统
+    本系统基于 Jenkins + GitLab + Kubernetes 构建，支持弹性构建节点。
+    如有问题请联系 DevOps 团队。
+
+  numExecutors: 0   # Controller 节点不执行任务，所有任务在 Agent Pod 中执行
+
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          name: "Administrator"
+          password: "${JENKINS_ADMIN_PASSWORD}"    # 从环境变量注入
+        - id: "developer"
+          name: "Developer"
+          password: "${JENKINS_DEV_PASSWORD}"
+
+  authorizationStrategy:
+    roleBased:
+      roles:
+        global:
+          - name: "admin"
+            description: "系统管理员"
+            permissions:
+              - "Overall/Administer"
+            assignments:
+              - "admin"
+          - name: "developer"
+            description: "开发人员"
+            permissions:
+              - "Overall/Read"
+              - "Job/Build"
+              - "Job/Cancel"
+              - "Job/Read"
+              - "Job/Workspace"
+              - "Run/Replay"
+              - "Run/Update"
+              - "View/Read"
+            assignments:
+              - "developer"
+
+  # Kubernetes 动态 Agent 云配置
+  clouds:
+    - kubernetes:
+        name: "kubernetes"
+        serverUrl: ""         # 空字符串表示使用集群内 In-Cluster 配置
+        namespace: "jenkins"
+        jenkinsUrl: "http://jenkins.jenkins.svc.cluster.local:8080"
+        jenkinsTunnel: "jenkins-agent.jenkins.svc.cluster.local:50000"
+        connectTimeout: 5
+        readTimeout: 15
+        containerCapStr: "20"   # 最大并发 Agent Pod 数量
+        maxRequestsPerHostStr: "32"
+        retentionTimeout: 5
+        waitForPodSec: 600
+
+        # Java 构建节点模板
+        templates:
+          - name: "java-agent"
+            namespace: "jenkins"
+            label: "java"
+            serviceAccount: "jenkins"
+            nodeUsageMode: "EXCLUSIVE"
+            idleMinutes: 0    # 任务完成后立即删除 Pod（弹性资源）
+            yamlMergeStrategy: "override"
+            yaml: |
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                labels:
+                  app: jenkins-agent
+                  agent-type: java
+              spec:
+                serviceAccountName: jenkins
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 1000
+                containers:
+                  - name: jnlp
+                    image: jenkins/inbound-agent:latest
+                    resources:
+                      requests:
+                        cpu: "200m"
+                        memory: "256Mi"
+                  - name: maven
+                    image: ${HARBOR_URL}/build-agents/java:17
+                    imagePullPolicy: Always
+                    command: ["sleep"]
+                    args: ["infinity"]
+                    resources:
+                      requests:
+                        cpu: "500m"
+                        memory: "1Gi"
+                      limits:
+                        cpu: "2000m"
+                        memory: "4Gi"
+                    volumeMounts:
+                      - name: maven-cache
+                        mountPath: /root/.m2
+                      - name: docker-sock
+                        mountPath: /var/run/docker.sock
+                  - name: docker
+                    image: docker:24-dind
+                    securityContext:
+                      privileged: true
+                    env:
+                      - name: DOCKER_TLS_CERTDIR
+                        value: ""
+                    resources:
+                      requests:
+                        cpu: "200m"
+                        memory: "256Mi"
+                      limits:
+                        cpu: "1000m"
+                        memory: "2Gi"
+                volumes:
+                  - name: maven-cache
+                    persistentVolumeClaim:
+                      claimName: maven-cache-pvc
+                  - name: docker-sock
+                    hostPath:
+                      path: /var/run/docker.sock
+
+          # Node.js 构建节点模板
+          - name: "nodejs-agent"
+            namespace: "jenkins"
+            label: "nodejs"
+            serviceAccount: "jenkins"
+            nodeUsageMode: "EXCLUSIVE"
+            idleMinutes: 0
+            yaml: |
+              apiVersion: v1
+              kind: Pod
+              spec:
+                containers:
+                  - name: jnlp
+                    image: jenkins/inbound-agent:latest
+                    resources:
+                      requests:
+                        cpu: "200m"
+                        memory: "256Mi"
+                  - name: node
+                    image: ${HARBOR_URL}/build-agents/nodejs:20
+                    imagePullPolicy: Always
+                    command: ["sleep"]
+                    args: ["infinity"]
+                    resources:
+                      requests:
+                        cpu: "500m"
+                        memory: "1Gi"
+                      limits:
+                        cpu: "2000m"
+                        memory: "4Gi"
+                    volumeMounts:
+                      - name: npm-cache
+                        mountPath: /root/.npm
+                  - name: docker
+                    image: docker:24-dind
+                    securityContext:
+                      privileged: true
+                    env:
+                      - name: DOCKER_TLS_CERTDIR
+                        value: ""
+                volumes:
+                  - name: npm-cache
+                    persistentVolumeClaim:
+                      claimName: npm-cache-pvc
+
+          # Python 构建节点模板
+          - name: "python-agent"
+            namespace: "jenkins"
+            label: "python"
+            serviceAccount: "jenkins"
+            nodeUsageMode: "EXCLUSIVE"
+            idleMinutes: 0
+            yaml: |
+              apiVersion: v1
+              kind: Pod
+              spec:
+                containers:
+                  - name: jnlp
+                    image: jenkins/inbound-agent:latest
+                    resources:
+                      requests:
+                        cpu: "200m"
+                        memory: "256Mi"
+                  - name: python
+                    image: ${HARBOR_URL}/build-agents/python:3.11
+                    imagePullPolicy: Always
+                    command: ["sleep"]
+                    args: ["infinity"]
+                    resources:
+                      requests:
+                        cpu: "500m"
+                        memory: "1Gi"
+                      limits:
+                        cpu: "2000m"
+                        memory: "4Gi"
+                    volumeMounts:
+                      - name: pip-cache
+                        mountPath: /root/.cache/pip
+                  - name: docker
+                    image: docker:24-dind
+                    securityContext:
+                      privileged: true
+                    env:
+                      - name: DOCKER_TLS_CERTDIR
+                        value: ""
+                volumes:
+                  - name: pip-cache
+                    persistentVolumeClaim:
+                      claimName: pip-cache-pvc
+
+# 全局工具配置
+tool:
+  git:
+    installations:
+      - name: "Default"
+        home: "git"
+  maven:
+    installations:
+      - name: "Maven3"
+        home: "/usr/share/maven"
+  nodejs:
+    installations:
+      - name: "Node20"
+        home: "/usr/local/bin"
+
+# 全局环境变量
+globalNodeProperties:
+  - envVars:
+      env:
+        - key: "HARBOR_URL"
+          value: "${HARBOR_URL}"
+        - key: "GITLAB_URL"
+          value: "${GITLAB_URL}"
+        - key: "SONARQUBE_URL"
+          value: "${SONARQUBE_URL}"
+
+# 凭证配置（实际密码通过环境变量注入）
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          # GitLab API Token
+          - gitLabApiTokenImpl:
+              scope: GLOBAL
+              id: "gitlab-api-token"
+              description: "GitLab API Token"
+              apiToken: "${GITLAB_TOKEN}"
+
+          # Harbor 镜像仓库认证
+          - usernamePassword:
+              scope: GLOBAL
+              id: "harbor-credentials"
+              description: "Harbor Registry Credentials"
+              username: "${HARBOR_USERNAME}"
+              password: "${HARBOR_PASSWORD}"
+
+          # Kubernetes 集群 kubeconfig
+          - kubeconfigContent:
+              scope: GLOBAL
+              id: "kubeconfig"
+              description: "Kubernetes Cluster Config"
+              kubeconfigContent: "${KUBECONFIG_CONTENT}"
+
+          # SonarQube Token
+          - string:
+              scope: GLOBAL
+              id: "sonarqube-token"
+              description: "SonarQube Authentication Token"
+              secret: "${SONARQUBE_TOKEN}"
+
+          # SSH 密钥（Git 访问）
+          - basicSSHUserPrivateKey:
+              scope: GLOBAL
+              id: "gitlab-ssh-key"
+              description: "GitLab SSH Private Key"
+              username: "git"
+              privateKeySource:
+                directEntry:
+                  privateKey: "${GITLAB_SSH_PRIVATE_KEY}"
+
+# 插件配置
+unclassified:
+  # GitLab 连接配置
+  gitLabConnectionConfig:
+    connections:
+      - apiTokenId: "gitlab-api-token"
+        clientBuilderId: "autodetect"
+        connectionTimeout: 10
+        ignoreCertificateErrors: false
+        name: "GitLab"
+        readTimeout: 10
+        url: "${GITLAB_URL}"
+
+  # SonarQube 配置
+  sonarGlobalConfiguration:
+    buildWrapperEnabled: false
+    installations:
+      - name: "sonarqube"
+        serverUrl: "${SONARQUBE_URL}"
+        credentialsId: "sonarqube-token"
+
+  # 共享库配置
+  globalLibraries:
+    libraries:
+      - name: "cicd-shared-library"
+        defaultVersion: "main"
+        implicit: false
+        allowVersionOverride: true
+        retriever:
+          modernSCM:
+            scm:
+              git:
+                remote: "${GITLAB_URL}/infra/cicd-shared-library.git"
+                credentialsId: "gitlab-ssh-key"
+
+  # 邮件通知
+  mailer:
+    smtpHost: "${SMTP_HOST}"
+    smtpPort: "465"
+    useSsl: true
+    authentication:
+      username: "${SMTP_USERNAME}"
+      password: "${SMTP_PASSWORD}"
+    replyToAddress: "cicd@your-company.com"
+
+  # 构建超时全局配置（防止构建卡死）
+  buildTimeoutWrapper:
+    timeoutMinutes: 60
+    timeoutType: "Absolute"
+
+  # 构建历史保留策略
+  buildDiscarder:
+    defaultLogRotator:
+      daysToKeepStr: "30"
+      numToKeepStr: "50"
+
+security:
+  apiToken:
+    creationOfLegacyTokenEnabled: false
+    tokenGenerationOnCreationEnabled: false
+    usageStatisticsEnabled: true
+  csrf:
+    defaultCrumbIssuer:
+      excludeClientIPFromCrumb: false
+  # 允许 Agents 连接
+  queueItemAuthenticator:
+    authenticators:
+      - global:
+          strategy: "systemAuthorizationStrategy"

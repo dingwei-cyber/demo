@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
+          https://maven.apache.org/xsd/settings-1.0.0.xsd">
+
+  <localRepository>/root/.m2/repository</localRepository>
+
+  <!-- 使用内网 Maven 私服（Nexus/Artifactory），加速依赖下载 -->
+  <mirrors>
+    <mirror>
+      <id>nexus-mirror</id>
+      <mirrorOf>*</mirrorOf>
+      <name>Internal Nexus Repository</name>
+      <!-- 替换为您的 Nexus/Artifactory 地址 -->
+      <url>${env.MAVEN_MIRROR_URL}</url>
+    </mirror>
+  </mirrors>
+
+  <servers>
+    <!-- Nexus 认证 -->
+    <server>
+      <id>nexus-mirror</id>
+      <username>${env.NEXUS_USERNAME}</username>
+      <password>${env.NEXUS_PASSWORD}</password>
+    </server>
+  </servers>
+
+  <profiles>
+    <profile>
+      <id>default</id>
+      <properties>
+        <!-- SonarQube 地址 -->
+        <sonar.host.url>${env.SONARQUBE_URL}</sonar.host.url>
+        <sonar.login>${env.SONARQUBE_TOKEN}</sonar.login>
+      </properties>
+    </profile>
+  </profiles>
+
+  <activeProfiles>
+    <activeProfile>default</activeProfile>
+  </activeProfiles>
+</settings>
