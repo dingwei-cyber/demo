@@ -1,0 +1,127 @@
+# GitLab CI/CD 配置模板
+# 此文件作为轻量级 GitLab CI 集成，主要用于：
+# 1. 在 GitLab Merge Request 中快速执行基础检查
+# 2. 触发 Jenkins 流水线（通过 API）
+# 3. 在 Jenkins 不可用时作为备用 CI
+
+# 全局变量
+variables:
+  JENKINS_URL: "http://jenkins.your-company.com"
+  HARBOR_URL: "harbor.your-company.com"
+  APP_NAME: "demo-app"
+  DOCKER_REPO: "${HARBOR_URL}/team/${APP_NAME}"
+
+# 定义执行阶段
+stages:
+  - validate
+  - trigger-jenkins
+  - notify
+
+# =============================================
+# 代码格式检查（快速，在 GitLab Runner 中直接执行）
+# =============================================
+code-lint:
+  stage: validate
+  image: ${HARBOR_URL}/build-agents/java:17
+  script:
+    - mvn checkstyle:check -B
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  cache:
+    key: "${CI_COMMIT_REF_SLUG}-maven"
+    paths:
+      - .m2/
+  artifacts:
+    when: always
+    reports:
+      junit:
+        - "**/target/checkstyle-result.xml"
+    expire_in: 1 week
+
+# 快速单元测试（MR 时在 GitLab Runner 中直接执行，提供快速反馈）
+quick-unit-test:
+  stage: validate
+  image: ${HARBOR_URL}/build-agents/java:17
+  script:
+    - mvn test -B -q
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  cache:
+    key: "${CI_COMMIT_REF_SLUG}-maven"
+    paths:
+      - .m2/
+  artifacts:
+    when: always
+    reports:
+      junit:
+        - "**/target/surefire-reports/TEST-*.xml"
+    expire_in: 1 week
+
+# =============================================
+# 触发 Jenkins 主流水线
+# =============================================
+trigger-jenkins-ci:
+  stage: trigger-jenkins
+  image: alpine/curl:latest
+  script:
+    - |
+      echo "触发 Jenkins CI 流水线..."
+      RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+        "${JENKINS_URL}/job/${APP_NAME}/buildWithParameters" \
+        --user "${JENKINS_USER}:${JENKINS_TOKEN}" \
+        --data "BRANCH=${CI_COMMIT_REF_NAME}&COMMIT=${CI_COMMIT_SHA}&MR_IID=${CI_MERGE_REQUEST_IID}")
+      HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+      if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+        echo "Jenkins 触发失败，HTTP 状态码: $HTTP_CODE"
+        exit 1
+      fi
+      echo "Jenkins CI 流水线已触发 ✅"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH =~ /^release\//'
+  environment:
+    name: jenkins-trigger
+  needs:
+    - code-lint
+
+# 触发 Jenkins Release 流水线（仅在打 Tag 时）
+trigger-jenkins-release:
+  stage: trigger-jenkins
+  image: alpine/curl:latest
+  script:
+    - |
+      echo "触发 Jenkins Release 流水线，版本: ${CI_COMMIT_TAG}"
+      curl -X POST \
+        "${JENKINS_URL}/job/${APP_NAME}-release/buildWithParameters" \
+        --user "${JENKINS_USER}:${JENKINS_TOKEN}" \
+        --data "TAG=${CI_COMMIT_TAG}" \
+        --fail
+      echo "Jenkins Release 流水线已触发 ✅"
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+
+# =============================================
+# GitLab 状态更新通知
+# =============================================
+notify-mr:
+  stage: notify
+  image: alpine/curl:latest
+  script:
+    - |
+      if [ "$CI_JOB_STATUS" = "success" ]; then
+        STATE="success"
+        MESSAGE="✅ 基础检查通过，Jenkins 流水线已触发"
+      else
+        STATE="failed"
+        MESSAGE="❌ 检查失败，请查看详情"
+      fi
+      curl -X POST \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/statuses/${CI_COMMIT_SHA}" \
+        --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+        --data "state=${STATE}&context=gitlab-ci&description=${MESSAGE}&target_url=${CI_PIPELINE_URL}"
+  when: always
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'

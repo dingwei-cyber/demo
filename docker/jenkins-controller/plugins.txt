@@ -1,0 +1,62 @@
+# Jenkins 插件列表（预安装）
+# 格式：plugin-id:version（latest 表示最新稳定版）
+
+# Kubernetes 弹性 Agent
+kubernetes:latest
+kubernetes-credentials:latest
+
+# 流水线核心
+workflow-aggregator:latest
+workflow-job:latest
+pipeline-stage-view:latest
+blue-ocean:latest
+
+# GitLab 集成
+gitlab-plugin:latest
+gitlab-branch-source:latest
+git:latest
+
+# 配置即代码
+configuration-as-code:latest
+
+# Job DSL
+job-dsl:latest
+
+# 凭证管理
+credentials:latest
+credentials-binding:latest
+plain-credentials:latest
+ssh-credentials:latest
+
+# 通知
+mailer:latest
+email-ext:latest
+dingtalk:latest
+
+# 代码质量
+sonar:latest
+jacoco:latest
+cobertura:latest
+warnings-ng:latest
+htmlpublisher:latest
+
+# 测试报告
+junit:latest
+allure-jenkins-plugin:latest
+
+# 安全
+role-strategy:latest
+matrix-auth:latest
+
+# Docker
+docker-workflow:latest
+docker-plugin:latest
+
+# 实用工具
+timestamper:latest
+ansicolor:latest
+build-timeout:latest
+rebuild:latest
+ws-cleanup:latest
+build-discarder:latest
+parameterized-trigger:latest

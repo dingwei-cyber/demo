@@ -1,0 +1,64 @@
+/**
+ * 主流水线模板 (Jenkinsfile)
+ *
+ * 此文件放在应用仓库根目录，被 Jenkins 自动发现并执行
+ * 通过调用共享库中的 ciPipeline 函数实现完整的 CI/CD 流程
+ *
+ * 自定义配置说明见 docs/user-manual.md
+ */
+@Library('cicd-shared-library') _
+
+ciPipeline(
+    // =============================================
+    // 必填项：应用基本信息
+    // =============================================
+    appName       : 'demo-app',          // 应用名称（用于 Helm Release 名称）
+    language      : 'java',              // 构建语言: java | nodejs | python
+    dockerRegistry: 'harbor.your-company.com',
+    dockerRepo    : 'team/demo-app',
+
+    // =============================================
+    // 可选项：构建命令（不填则使用语言默认命令）
+    // =============================================
+    buildCommand  : 'mvn clean package -DskipTests -B',
+    testCommand   : 'mvn test -B',
+
+    // =============================================
+    // 可选项：功能开关
+    // =============================================
+    sonarEnabled  : true,   // 是否启用 SonarQube 代码扫描
+    trivyEnabled  : true,   // 是否启用 Trivy 镜像安全扫描
+
+    // =============================================
+    // 可选项：镜像标签策略
+    // gitsha    - 使用 Git Commit SHA 前8位（默认）
+    // semver    - 使用 Git Tag 版本号（发布时使用）
+    // timestamp - 使用时间戳
+    // =============================================
+    imageTagStrategy: 'gitsha',
+
+    // =============================================
+    // 可选项：各环境部署配置
+    // =============================================
+    environments: [
+        dev: [
+            namespace: 'dev',
+            values   : 'helm/values-dev.yaml'
+        ],
+        staging: [
+            namespace: 'staging',
+            values   : 'helm/values-staging.yaml'
+        ],
+        prod: [
+            namespace       : 'prod',
+            values          : 'helm/values-prod.yaml',
+            requiresApproval: true     // 生产环境需人工审批，默认 24 小时超时
+        ]
+    ],
+
+    // =============================================
+    // 可选项：通知配置
+    // =============================================
+    notifyChannel: 'cicd-notifications',
+    helmChart    : './helm'
+)
